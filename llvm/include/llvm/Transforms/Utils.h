@@ -87,6 +87,11 @@ FunctionPass *createAddDiscriminatorsPass();
 
 //===----------------------------------------------------------------------===//
 //
+// CXXCopyElim - Eliminate copies of C++ objects
+FunctionPass *createCXXCopyEliminationPass();
+
+//===----------------------------------------------------------------------===//
+//
 // PromoteMemoryToRegister - This pass is used to promote memory references to
 // be register references. A simple example of the transformation performed by
 // this pass is:

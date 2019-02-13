@@ -106,6 +106,9 @@ HANDLE_TARGET_OPCODE(BUNDLE)
 HANDLE_TARGET_OPCODE(LIFETIME_START)
 HANDLE_TARGET_OPCODE(LIFETIME_END)
 
+HANDLE_TARGET_OPCODE(CXX_LIFETIME_START)
+HANDLE_TARGET_OPCODE(CXX_LIFETIME_END)
+
 /// A Stackmap instruction captures the location of live variables at its
 /// position in the instruction stream. It is followed by a shadow of bytes
 /// that must lie within the function and not contain another stackmap.

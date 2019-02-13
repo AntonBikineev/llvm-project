@@ -4291,10 +4291,14 @@ void Verifier::visitIntrinsicCallSite(Intrinsic::ID ID, CallSite CS) {
     break;
   case Intrinsic::lifetime_start:
   case Intrinsic::lifetime_end:
+  case Intrinsic::cxx_lifetime_start:
+  case Intrinsic::cxx_lifetime_end:
   case Intrinsic::invariant_start:
     Assert(isa<ConstantInt>(CS.getArgOperand(0)),
            "size argument of memory use markers must be a constant integer",
            CS);
+    break;
+  case Intrinsic::cxx_copy:
     break;
   case Intrinsic::invariant_end:
     Assert(isa<ConstantInt>(CS.getArgOperand(1)),

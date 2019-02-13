@@ -57,6 +57,9 @@ static bool shouldEmitLifetimeMarkers(const CodeGenOptions &CGOpts,
   if (CGOpts.SanitizeAddressUseAfterScope)
     return true;
 
+  if (CGOpts.EnableCXXLifetimeMarkers)
+      return true;
+
   // For now, only in optimized builds.
   return CGOpts.OptimizationLevel != 0;
 }

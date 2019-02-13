@@ -606,6 +606,15 @@ bool Instruction::isLifetimeStartOrEnd() const {
   return ID == Intrinsic::lifetime_start || ID == Intrinsic::lifetime_end;
 }
 
+bool Instruction::isCXXLifetimeOrCopy() const {
+  auto II = dyn_cast<IntrinsicInst>(this);
+  if (!II)
+    return false;
+  Intrinsic::ID ID = II->getIntrinsicID();
+  return ID == Intrinsic::cxx_lifetime_start ||
+         ID == Intrinsic::cxx_lifetime_end || ID == Intrinsic::cxx_copy;
+}
+
 const Instruction *Instruction::getNextNonDebugInstruction() const {
   for (const Instruction *I = getNextNode(); I; I = I->getNextNode())
     if (!isa<DbgInfoIntrinsic>(I))

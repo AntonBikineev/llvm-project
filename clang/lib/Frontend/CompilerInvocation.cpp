@@ -741,6 +741,10 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
 
   Opts.DisableLLVMPasses = Args.hasArg(OPT_disable_llvm_passes);
   Opts.DisableLifetimeMarkers = Args.hasArg(OPT_disable_lifetimemarkers);
+  Opts.EnableCXXLifetimeMarkers = Args.hasArg(OPT_enable_cxxlifetimemarkers) ||
+                                  Args.hasArg(OPT_fcxx_copy_elim);
+  if (Opts.EnableCXXLifetimeMarkers)
+    Opts.DisableLifetimeMarkers = 0;
   Opts.DisableO0ImplyOptNone = Args.hasArg(OPT_disable_O0_optnone);
   Opts.DisableRedZone = Args.hasArg(OPT_disable_red_zone);
   Opts.IndirectTlsSegRefs = Args.hasArg(OPT_mno_tls_direct_seg_refs);
@@ -2580,6 +2584,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
     && Opts.OpenCLVersion == 200);
   Opts.BlocksRuntimeOptional = Args.hasArg(OPT_fblocks_runtime_optional);
   Opts.CoroutinesTS = Args.hasArg(OPT_fcoroutines_ts);
+  Opts.CXXCopyElim = Args.hasArg(OPT_fcxx_copy_elim);
 
   // Enable [[]] attributes in C++11 by default.
   Opts.DoubleSquareBracketAttributes =

@@ -1076,6 +1076,8 @@ public:
     case TargetOpcode::DBG_LABEL:
     case TargetOpcode::LIFETIME_START:
     case TargetOpcode::LIFETIME_END:
+    case TargetOpcode::CXX_LIFETIME_START:
+    case TargetOpcode::CXX_LIFETIME_END:
       return true;
     }
   }

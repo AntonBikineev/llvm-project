@@ -188,6 +188,7 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
   bool IsEHCleanup = Kind & EHCleanup;
   bool IsActive = !(Kind & InactiveCleanup);
   bool IsLifetimeMarker = Kind & LifetimeMarker;
+  bool IsCXXLifetimeMarker = Kind & CXXLifetimeMarker;
   EHCleanupScope *Scope =
     new (Buffer) EHCleanupScope(IsNormalCleanup,
                                 IsEHCleanup,
@@ -202,6 +203,8 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
     InnermostEHScope = stable_begin();
   if (IsLifetimeMarker)
     Scope->setLifetimeMarker();
+  if (IsCXXLifetimeMarker)
+    Scope->setCXXLifetimeMarker();
 
   return Scope->getCleanupBuffer();
 }

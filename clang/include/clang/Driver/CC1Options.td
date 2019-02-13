@@ -201,6 +201,8 @@ def disable_llvm_optzns : Flag<["-"], "disable-llvm-optzns">,
 def disable_lifetimemarkers : Flag<["-"], "disable-lifetime-markers">,
   HelpText<"Disable lifetime-markers emission even when optimizations are "
            "enabled">;
+def enable_cxxlifetimemarkers : Flag<["-"], "enable-cxx-lifetime-markers">,
+  HelpText<"Enable cxx-lifetime-markers enabled">;
 def disable_O0_optnone : Flag<["-"], "disable-O0-optnone">,
   HelpText<"Disable adding the optnone attribute to functions at O0">;
 def disable_red_zone : Flag<["-"], "disable-red-zone">,

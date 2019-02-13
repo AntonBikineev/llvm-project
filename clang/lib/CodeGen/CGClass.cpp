@@ -2092,6 +2092,13 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
     EmitTypeCheck(CodeGenFunction::TCK_ConstructorCall, Loc, This.getPointer(),
                   getContext().getRecordType(ClassDecl), CharUnits::Zero());
 
+  // emit cxx.copy intrinsic
+  if (!Delegating && !ForVirtualBase && Type == Ctor_Complete
+      && D->isCopyOrMoveConstructor()) {
+    EmitCXXCopy(This.getPointer(),
+                Args[1].getRValue(*this).getScalarVal());
+  }
+
   if (D->isTrivial() && D->isDefaultConstructor()) {
     assert(Args.size() == 1 && "trivial default ctor with args");
     return;
@@ -2153,6 +2160,19 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
       CGM.getCXXABI().canSpeculativelyEmitVTable(ClassDecl) &&
       CGM.getCodeGenOpts().StrictVTablePointers)
     EmitVTableAssumptionLoads(ClassDecl, This);
+
+  /* TODO: bikineev
+  // Generate CXX Lifetime intrinsics
+  if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers && Type != Ctor_Base) {
+    QualType ThisType = D->getThisType(getContext());
+    uint64_t Size = CGM.getDataLayout().getTypeAllocSize(
+        ConvertTypeForMem(std::move(ThisType)));
+    llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+    EHStack.pushCleanup<CallCXXLifetimeEnd>(
+        NormalEHCXXLifetimeMarker, This, SizeV);
+    EmitCXXLifetimeStart(Size, This.getPointer());
+  }
+  */
 }
 
 void CodeGenFunction::EmitInheritedCXXConstructorCall(
@@ -2391,6 +2411,14 @@ void CodeGenFunction::EmitCXXDestructorCall(const CXXDestructorDecl *DD,
                                             bool ForVirtualBase,
                                             bool Delegating,
                                             Address This) {
+  /*
+  if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers && Type != Dtor_Base) {
+    QualType ThisType = DD->getThisType(getContext());
+    uint64_t Size = CGM.getDataLayout().getTypeAllocSize(
+        ConvertTypeForMem(std::move(ThisType)));
+    llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+    EmitCXXLifetimeEnd(SizeV, This.getPointer());
+  }*/
   CGM.getCXXABI().EmitDestructorCall(*this, DD, Type, ForVirtualBase,
                                      Delegating, This);
 }

@@ -361,8 +361,8 @@ class Value;
                             SmallVectorImpl<Value *> &Objects,
                             const DataLayout &DL);
 
-  /// Return true if the only users of this pointer are lifetime markers.
-  bool onlyUsedByLifetimeMarkers(const Value *V);
+  /// Return true if the only users of this pointer are lifetime or cxx markers.
+  bool onlyUsedByLifetimeOrCXXMarkers(const Value *V);
 
   /// Return true if the instruction does not have any effects besides
   /// calculating the result and does not have undefined behavior.

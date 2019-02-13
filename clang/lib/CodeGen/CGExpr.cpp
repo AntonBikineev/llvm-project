@@ -212,10 +212,34 @@ RValue CodeGenFunction::EmitAnyExpr(const Expr *E,
 /// always be accessible even if no aggregate location is provided.
 RValue CodeGenFunction::EmitAnyExprToTemp(const Expr *E) {
   AggValueSlot AggSlot = AggValueSlot::ignored();
+  QualType AggType = E->getType();
 
-  if (hasAggregateEvaluationKind(E->getType()))
-    AggSlot = CreateAggTemp(E->getType(), "agg.tmp");
-  return EmitAnyExpr(E, AggSlot);
+  // TODO: always pushing lifetime.end cleanups as part
+  // of full expression seems not to be a good idea
+  if (hasAggregateEvaluationKind(AggType)) {
+    AggSlot = CreateAggTemp(AggType, "agg.tmp");
+    if (auto *Size =
+            EmitLifetimeStart(CGM.getDataLayout().getTypeAllocSize(
+                                  AggSlot.getAddress().getElementType()),
+                              AggSlot.getPointer()))
+      pushFullExprCleanup<CallLifetimeEnd>(NormalEHLifetimeMarker,
+                                           AggSlot.getAddress(), Size);
+  }
+
+  RValue RV = EmitAnyExpr(E, AggSlot);
+
+  // generate cxx.lifetime markers for temporary *aggregates* as well
+  if (hasAggregateEvaluationKind(E->getType()) &&
+      CGM.getCodeGenOpts().EnableCXXLifetimeMarkers) {
+    uint64_t Size =
+        CGM.getDataLayout().getTypeAllocSize(ConvertTypeForMem(AggType));
+    llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+    pushFullExprCleanup<CallCXXLifetimeEnd>(NormalEHLifetimeMarker,
+                                            AggSlot.getAddress(), SizeV);
+    EmitCXXLifetimeStart(Size, AggSlot.getPointer());
+  }
+
+  return RV;
 }
 
 /// EmitAnyExprToMem - Evaluate an expression into a given memory
@@ -327,6 +351,11 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
   if (!ReferenceTemporaryDtor)
     return;
 
+  // TODO: Bikineev: simplify cfg
+  const uint64_t Size = CGF.CGM.getDataLayout().getTypeAllocSize(
+      CGF.ConvertTypeForMem(M->getType()));
+  llvm::Value *SizeV = llvm::ConstantInt::get(CGF.Int64Ty, Size);
+
   // Call the destructor for the temporary.
   switch (M->getStorageDuration()) {
   case SD_Static:
@@ -353,6 +382,9 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
     CGF.pushDestroy(NormalAndEHCleanup, ReferenceTemporary, E->getType(),
                     CodeGenFunction::destroyCXXObject,
                     CGF.getLangOpts().Exceptions);
+    if (CGF.CGM.getCodeGenOpts().EnableCXXLifetimeMarkers)
+      CGF.pushFullExprCleanup<CodeGenFunction::CallCXXLifetimeEnd>(
+          NormalEHLifetimeMarker, ReferenceTemporary, SizeV);
     break;
 
   case SD_Automatic:
@@ -360,6 +392,9 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
                                     ReferenceTemporary, E->getType(),
                                     CodeGenFunction::destroyCXXObject,
                                     CGF.getLangOpts().Exceptions);
+    if (CGF.CGM.getCodeGenOpts().EnableCXXLifetimeMarkers)
+      CGF.pushCleanupAfterFullExpr<CodeGenFunction::CallCXXLifetimeEnd>(
+          NormalEHLifetimeMarker, ReferenceTemporary, SizeV);
     break;
 
   case SD_Dynamic:
@@ -496,8 +531,10 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
     }
   } else {
+    bool AutoStorage = false;
     switch (M->getStorageDuration()) {
     case SD_Automatic:
+      AutoStorage = true;
       if (auto *Size = EmitLifetimeStart(
               CGM.getDataLayout().getTypeAllocSize(Alloca.getElementType()),
               Alloca.getPointer())) {
@@ -507,6 +544,7 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       break;
 
     case SD_FullExpression: {
+      AutoStorage = true;
       if (!ShouldEmitLifetimeMarkers)
         break;
 
@@ -547,6 +585,10 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       break;
     }
     EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
+    if (AutoStorage && CGM.getCodeGenOpts().EnableCXXLifetimeMarkers)
+      EmitCXXLifetimeStart(
+          CGM.getDataLayout().getTypeAllocSize(Alloca.getElementType()),
+          Alloca.getPointer());
   }
   pushTemporaryCleanup(*this, M, E, Object);
 

@@ -517,6 +517,15 @@ private:
   /// void @llvm.lifetime.end(i64 %size, i8* nocapture <ptr>)
   llvm::Constant *LifetimeEndFn = nullptr;
 
+  /// void @llvm.cxx.lifetime.start(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *CXXLifetimeStartFn = nullptr;
+
+  /// void @llvm.cxx.lifetime.end(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *CXXLifetimeEndFn = nullptr;
+
+  /// void @llvm.cxx.copy.end(i8* nocapture <ptr>, i8* nocapture <ptr>)
+  llvm::Constant *CXXCopyFn = nullptr;
+
   GlobalDecl initializedGlobalDecl;
 
   std::unique_ptr<SanitizerMetadata> SanitizerMD;
@@ -1029,6 +1038,11 @@ public:
 
   llvm::Constant *getLLVMLifetimeStartFn();
   llvm::Constant *getLLVMLifetimeEndFn();
+
+  llvm::Constant *getLLVMCXXLifetimeStartFn();
+  llvm::Constant *getLLVMCXXLifetimeEndFn();
+
+  llvm::Constant *getLLVMCXXCopyFn();
 
   // Make sure that this type is translated.
   void UpdateCompletedType(const TagDecl *TD);

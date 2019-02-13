@@ -785,9 +785,16 @@ void TransferFunctions::VisitDeclStmt(DeclStmt *DS) {
         // appropriately, but we need to continue to analyze subsequent uses
         // of the variable.
         vals[VD] = Uninitialized;
-      } else if (VD->getInit()) {
-        // Treat the new variable as initialized.
-        vals[VD] = Initialized;
+      } else if (auto *Init = VD->getInit()) {
+        if (VD->getType()->isPointerType() &&
+            Init->isNullPointerConstant(ac.getASTContext(),
+                                        Expr::NPC_ValueDependentIsNotNull)) {
+          // Treat the nullptr-initialized variable as uninitialized
+          vals[VD] = Uninitialized;
+        } else {
+          // Treat the new variable as initialized.
+          vals[VD] = Initialized;
+        }
       } else {
         // No initializer: the variable is now uninitialized. This matters
         // for cases like:

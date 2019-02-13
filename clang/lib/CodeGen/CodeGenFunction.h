@@ -505,6 +505,19 @@ public:
     }
   };
 
+  class CallCXXLifetimeEnd final : public EHScopeStack::Cleanup {
+      llvm::Value *Addr;
+      llvm::Value *Size;
+
+  public:
+      CallCXXLifetimeEnd(Address addr, llvm::Value *size)
+              : Addr(addr.getPointer()), Size(size) {}
+
+      void Emit(CodeGenFunction &CGF, Flags flags) override {
+        CGF.EmitCXXLifetimeEnd(Size, Addr);
+      }
+  };
+
   /// Header for data within LifetimeExtendedCleanupStack.
   struct LifetimeExtendedCleanupHeader {
     /// The size of the following cleanup object.
@@ -2230,12 +2243,26 @@ public:
   /// CreateAggTemp - Create a temporary memory object for the given
   /// aggregate type.
   AggValueSlot CreateAggTemp(QualType T, const Twine &Name = "tmp") {
-    return AggValueSlot::forAddr(CreateMemTemp(T, Name),
-                                 T.getQualifiers(),
-                                 AggValueSlot::IsNotDestructed,
-                                 AggValueSlot::DoesNotNeedGCBarriers,
-                                 AggValueSlot::IsNotAliased,
-                                 AggValueSlot::DoesNotOverlap);
+    auto AVS = AggValueSlot::forAddr(CreateMemTemp(T, Name),
+                                     T.getQualifiers(),
+                                     AggValueSlot::IsNotDestructed,
+                                     AggValueSlot::DoesNotNeedGCBarriers,
+                                     AggValueSlot::IsNotAliased,
+                                     AggValueSlot::DoesNotOverlap);
+
+    /*
+    if (auto *Size = EmitLifetimeStart(
+        CGM.getDataLayout().getTypeAllocSize(AVS.getAddress().getElementType()),
+        AVS.getPointer())) {
+      pushCleanupAfterFullExpr<CallLifetimeEnd>(NormalEHLifetimeMarker,
+                                                AVS.getAddress, Size);
+    }
+     */
+    //EHStack.pushCleanup<CallCXXLifetimeEnd>(
+    //    NormalEHCXXLifetimeMarker, AggSlot.getAddress(), SizeV);
+    //EmitCXXLifetimeStart(Size, AggSlot.getPointer());
+
+    return AVS;
   }
 
   /// Emit a cast to void* in the appropriate address space.
@@ -2553,6 +2580,11 @@ public:
 
   llvm::Value *EmitLifetimeStart(uint64_t Size, llvm::Value *Addr);
   void EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr);
+
+  llvm::Value *EmitCXXLifetimeStart(uint64_t Size, llvm::Value *Addr);
+  void EmitCXXLifetimeEnd(llvm::Value *Size, llvm::Value *Addr);
+
+  void EmitCXXCopy(llvm::Value *This, llvm::Value *From);
 
   llvm::Value *EmitCXXNewExpr(const CXXNewExpr *E);
   void EmitCXXDeleteExpr(const CXXDeleteExpr *E);

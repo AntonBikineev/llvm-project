@@ -702,6 +702,8 @@ void ScheduleDAGRRList::EmitNode(SUnit *SU) {
   case ISD::TokenFactor:
   case ISD::LIFETIME_START:
   case ISD::LIFETIME_END:
+  case ISD::CXX_LIFETIME_START:
+  case ISD::CXX_LIFETIME_END:
   case ISD::CopyToReg:
   case ISD::CopyFromReg:
   case ISD::EH_LABEL:

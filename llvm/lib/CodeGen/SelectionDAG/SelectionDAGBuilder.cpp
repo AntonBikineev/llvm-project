@@ -6127,6 +6127,10 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     }
     return nullptr;
   }
+  case Intrinsic::cxx_lifetime_start:
+  case Intrinsic::cxx_lifetime_end:
+  case Intrinsic::cxx_copy:
+    return nullptr;
   case Intrinsic::invariant_start:
     // Discard region information.
     setValue(&I, DAG.getUNDEF(TLI.getPointerTy(DAG.getDataLayout())));

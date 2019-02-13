@@ -515,6 +515,9 @@ bool llvm::isAssumeLikeIntrinsic(const Instruction *I) {
       case Intrinsic::invariant_end:
       case Intrinsic::lifetime_start:
       case Intrinsic::lifetime_end:
+      case Intrinsic::cxx_lifetime_start:
+      case Intrinsic::cxx_lifetime_end:
+      case Intrinsic::cxx_copy:
       case Intrinsic::objectsize:
       case Intrinsic::ptr_annotation:
       case Intrinsic::var_annotation:
@@ -3817,12 +3820,12 @@ bool llvm::getUnderlyingObjectsForCodeGen(const Value *V,
 }
 
 /// Return true if the only users of this pointer are lifetime markers.
-bool llvm::onlyUsedByLifetimeMarkers(const Value *V) {
+bool llvm::onlyUsedByLifetimeOrCXXMarkers(const Value *V) {
   for (const User *U : V->users()) {
     const IntrinsicInst *II = dyn_cast<IntrinsicInst>(U);
     if (!II) return false;
 
-    if (!II->isLifetimeStartOrEnd())
+    if (!II->isLifetimeStartOrEnd() && !II->isCXXLifetimeOrCopy())
       return false;
   }
   return true;

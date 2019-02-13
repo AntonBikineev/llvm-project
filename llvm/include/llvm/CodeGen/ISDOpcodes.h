@@ -843,6 +843,10 @@ namespace ISD {
     /// is the chain and the second operand is the alloca pointer.
     LIFETIME_START, LIFETIME_END,
 
+    /// This corresponds to the llvm.cxx.lifetime.* intrinsics. The first operand
+    /// is the chain and the second operand is the alloca pointer.
+    CXX_LIFETIME_START, CXX_LIFETIME_END,
+
     /// GC_TRANSITION_START/GC_TRANSITION_END - These operators mark the
     /// beginning and end of GC transition  sequence, and carry arbitrary
     /// information that target might need for lowering.  The first operand is

@@ -180,6 +180,9 @@ static bool isInertIntrinsic(unsigned ID) {
   case Intrinsic::adjust_trampoline:
   case Intrinsic::lifetime_start:
   case Intrinsic::lifetime_end:
+  case Intrinsic::cxx_lifetime_start:
+  case Intrinsic::cxx_lifetime_end:
+  case Intrinsic::cxx_copy:
   case Intrinsic::invariant_start:
   case Intrinsic::invariant_end:
   // Don't let dbg info affect our results.

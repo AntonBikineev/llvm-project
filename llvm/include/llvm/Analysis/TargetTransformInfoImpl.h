@@ -163,6 +163,9 @@ public:
     case Intrinsic::is_constant:
     case Intrinsic::lifetime_start:
     case Intrinsic::lifetime_end:
+    case Intrinsic::cxx_lifetime_start:
+    case Intrinsic::cxx_lifetime_end:
+    case Intrinsic::cxx_copy:
     case Intrinsic::objectsize:
     case Intrinsic::ptr_annotation:
     case Intrinsic::var_annotation:

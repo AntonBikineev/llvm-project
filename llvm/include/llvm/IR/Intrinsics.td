@@ -848,6 +848,18 @@ def int_invariant_end   : Intrinsic<[],
                                      llvm_anyptr_ty],
                                     [IntrArgMemOnly, NoCapture<2>]>;
 
+//===----------------------- C++ Memory Use Markers -----------------------===//
+//
+def int_cxx_lifetime_start  : Intrinsic<[],
+                                        [llvm_i64_ty, llvm_anyptr_ty],
+                                        [IntrArgMemOnly, NoCapture<1>]>;
+def int_cxx_lifetime_end    : Intrinsic<[],
+                                        [llvm_i64_ty, llvm_anyptr_ty],
+                                        [IntrArgMemOnly, NoCapture<1>]>;
+def int_cxx_copy            : Intrinsic<[],
+                                        [llvm_anyptr_ty, llvm_anyptr_ty],
+                                        [IntrArgMemOnly, NoCapture<0>, NoCapture<1>]>;
+
 // launder.invariant.group can't be marked with 'readnone' (IntrNoMem),
 // because it would cause CSE of two barriers with the same argument.
 // Inaccessiblememonly says that the barrier doesn't read the argument,

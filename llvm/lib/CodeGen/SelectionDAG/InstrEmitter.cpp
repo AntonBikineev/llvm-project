@@ -1048,6 +1048,16 @@ EmitSpecialNode(SDNode *Node, bool IsClone, bool IsCloned,
     .addFrameIndex(FI->getIndex());
     break;
   }
+  case ISD::CXX_LIFETIME_START:
+  case ISD::CXX_LIFETIME_END: {
+    unsigned TarOp = (Node->getOpcode() == ISD::CXX_LIFETIME_START) ?
+    TargetOpcode::CXX_LIFETIME_START : TargetOpcode::CXX_LIFETIME_END;
+
+    FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Node->getOperand(1));
+    BuildMI(*MBB, InsertPos, Node->getDebugLoc(), TII->get(TarOp))
+    .addFrameIndex(FI->getIndex());
+    break;
+  }
 
   case ISD::INLINEASM: {
     unsigned NumOps = Node->getNumOperands();

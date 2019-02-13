@@ -1226,6 +1226,40 @@ void CodeGenFunction::EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr) {
   C->setDoesNotThrow();
 }
 
+/// Emit a cxx.lifetime.begin marker
+/// \return a pointer to the temporary size Value if a marker was emitted, null
+/// otherwise
+llvm::Value *CodeGenFunction::EmitCXXLifetimeStart(uint64_t Size,
+                                                   llvm::Value *Addr) {
+  assert(Addr->getType()->getPointerAddressSpace() ==
+             CGM.getDataLayout().getAllocaAddrSpace() &&
+         "Pointer should be in alloca address space");
+  llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+  Addr = Builder.CreateBitCast(Addr, AllocaInt8PtrTy);
+  llvm::CallInst *C =
+      Builder.CreateCall(CGM.getLLVMCXXLifetimeStartFn(), {SizeV, Addr});
+  C->setDoesNotThrow();
+  return SizeV;
+}
+
+void CodeGenFunction::EmitCXXLifetimeEnd(llvm::Value *Size, llvm::Value *Addr) {
+  assert(Addr->getType()->getPointerAddressSpace() ==
+             CGM.getDataLayout().getAllocaAddrSpace() &&
+         "Pointer should be in alloca address space");
+  Addr = Builder.CreateBitCast(Addr, AllocaInt8PtrTy);
+  llvm::CallInst *C =
+      Builder.CreateCall(CGM.getLLVMCXXLifetimeEndFn(), {Size, Addr});
+  C->setDoesNotThrow();
+}
+
+void CodeGenFunction::EmitCXXCopy(llvm::Value *This, llvm::Value *Source) {
+  This = Builder.CreateBitCast(This, AllocaInt8PtrTy);
+  Source = Builder.CreateBitCast(Source, AllocaInt8PtrTy);
+  llvm::CallInst *C =
+      Builder.CreateCall(CGM.getLLVMCXXCopyFn(), {This, Source});
+  C->setDoesNotThrow();
+}
+
 void CodeGenFunction::EmitAndRegisterVariableArrayDimensions(
     CGDebugInfo *DI, const VarDecl &D, bool EmitDebugInfo) {
   // For each dimension stores its QualType and corresponding
@@ -1569,6 +1603,29 @@ bool CodeGenFunction::isTrivialInitializer(const Expr *Init) {
   return false;
 }
 
+/*
+static void EmitCXXLifetimeStartMarker(CodeGenFunction& CGF,
+                                       const Expr *init, const VarDecl *D) {
+  QualType type = D->getType();
+  if (!type->isReferenceType() &&
+      CodeGenFunction::getEvaluationKind(type) == TEK_Aggregate) {
+    // TODO: bikineev: unwrap parentheses some day
+    if (auto *Ctor = dyn_cast<const CXXConstructExpr>(init)) {
+      auto *CtorDecl = cast<CXXConstructorDecl>(Ctor->getReferencedDeclOfCallee());
+      if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers && Type != Ctor_Base) {
+        QualType ThisType = D->getThisType(getContext());
+        uint64_t Size = CGM.getDataLayout().getTypeAllocSize(
+            ConvertTypeForMem(std::move(ThisType)));
+        llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+        EHStack.pushCleanup<CallCXXLifetimeEnd>(
+            NormalEHCXXLifetimeMarker, This, SizeV);
+        EmitCXXLifetimeStart(Size, This.getPointer());
+      }
+    }
+  }
+}
+*/
+
 void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   assert(emission.Variable && "emission was not valid!");
 
@@ -1605,6 +1662,7 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
     if (emission.IsEscapingByRef)
       drillIntoBlockVariable(*this, Dst, &D);
     defaultInitNonTrivialCStructVar(Dst);
+    // TODO: bikineev: consider emitting cxx markers here as well
     return;
   }
 
@@ -1724,7 +1782,10 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
     initializeWhatIsTechnicallyUninitialized();
     LValue lv = MakeAddrLValue(Loc, type);
     lv.setNonGC(true);
-    return EmitExprAsInit(Init, &D, lv, capturedByInit);
+    EmitExprAsInit(Init, &D, lv, capturedByInit);
+    /*if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers)
+      EmitCXXLifetimeStartMarker(Init, &D);*/
+    return;
   }
 
   if (!emission.IsConstantAggregate) {
@@ -1876,6 +1937,14 @@ void CodeGenFunction::EmitAutoVarCleanups(const AutoVarEmission &emission) {
 
   const VarDecl &D = *emission.Variable;
 
+  // Generate CXX Lifetime intrinsics
+  if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers) {
+    QualType ThisType = D.getType();
+    uint64_t Size = CGM.getDataLayout().getTypeAllocSize(
+        ConvertTypeForMem(std::move(ThisType)));
+    EmitCXXLifetimeStart(Size, emission.Addr.getPointer());
+  }
+
   // Check the type for a cleanup.
   if (QualType::DestructionKind dtorKind = D.getType().isDestructedType())
     emitAutoVarTypeCleanup(emission, dtorKind);
@@ -1908,6 +1977,15 @@ void CodeGenFunction::EmitAutoVarCleanups(const AutoVarEmission &emission) {
     enterByrefCleanup(NormalAndEHCleanup, emission.Addr, Flags,
                       /*LoadBlockVarAddr*/ false,
                       cxxDestructorCanThrow(emission.Variable->getType()));
+  }
+
+  if (CGM.getCodeGenOpts().EnableCXXLifetimeMarkers) {
+    QualType ThisType = D.getType();
+    uint64_t Size = CGM.getDataLayout().getTypeAllocSize(
+        ConvertTypeForMem(std::move(ThisType)));
+    llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+    EHStack.pushCleanup<CallCXXLifetimeEnd>(
+        NormalEHCXXLifetimeMarker, emission.Addr, SizeV);
   }
 }
 
@@ -2208,6 +2286,34 @@ llvm::Constant *CodeGenModule::getLLVMLifetimeEndFn() {
   LifetimeEndFn = llvm::Intrinsic::getDeclaration(&getModule(),
     llvm::Intrinsic::lifetime_end, AllocaInt8PtrTy);
   return LifetimeEndFn;
+}
+
+/// Lazily declare the @llvm.cxx.lifetime.start intrinsic.
+llvm::Constant *CodeGenModule::getLLVMCXXLifetimeStartFn() {
+  if (CXXLifetimeStartFn)
+    return CXXLifetimeStartFn;
+  CXXLifetimeStartFn = llvm::Intrinsic::getDeclaration(&getModule(),
+    llvm::Intrinsic::cxx_lifetime_start, AllocaInt8PtrTy);
+  return CXXLifetimeStartFn;
+}
+
+/// Lazily declare the @llvm.cxx.lifetime.end intrinsic.
+llvm::Constant *CodeGenModule::getLLVMCXXLifetimeEndFn() {
+  if (CXXLifetimeEndFn)
+    return CXXLifetimeEndFn;
+  CXXLifetimeEndFn = llvm::Intrinsic::getDeclaration(&getModule(),
+    llvm::Intrinsic::cxx_lifetime_end, AllocaInt8PtrTy);
+  return CXXLifetimeEndFn;
+}
+
+/// Lazily declare the @llvm.cxx.copy intrinsic.
+llvm::Constant *CodeGenModule::getLLVMCXXCopyFn() {
+  if (CXXCopyFn)
+    return CXXCopyFn;
+  llvm::Type *Tys[] = {AllocaInt8PtrTy, AllocaInt8PtrTy};
+  CXXCopyFn = llvm::Intrinsic::getDeclaration(&getModule(),
+                                              llvm::Intrinsic::cxx_copy, Tys);
+  return CXXCopyFn;
 }
 
 namespace {

@@ -177,6 +177,11 @@ static void addObjCARCOptPass(const PassManagerBuilder &Builder, PassManagerBase
     PM.add(createObjCARCOptPass());
 }
 
+static void addCXXEliminateCopyPass(const PassManagerBuilder &Builder,
+                                    legacy::PassManagerBase &PM) {
+  //PM.add(createCXXCopyEliminationPass());
+}
+
 static void addAddDiscriminatorsPass(const PassManagerBuilder &Builder,
                                      legacy::PassManagerBase &PM) {
   PM.add(createAddDiscriminatorsPass());
@@ -560,6 +565,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
 
   if (TM)
     TM->adjustPassManager(PMBuilder);
+
+  if (LangOpts.CXXCopyElim) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
+                           addCXXEliminateCopyPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_ScalarOptimizerLate,
+                           addCXXEliminateCopyPass);
+  }
 
   if (CodeGenOpts.DebugInfoForProfiling ||
       !CodeGenOpts.SampleProfileFile.empty())

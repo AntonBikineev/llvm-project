@@ -1051,6 +1051,18 @@ def LIFETIME_END : StandardPseudoInstruction {
   let AsmString = "LIFETIME_END";
   let hasSideEffects = 0;
 }
+def CXX_LIFETIME_START : StandardPseudoInstruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins i32imm:$id);
+  let AsmString = "CXX_LIFETIME_START";
+  let hasSideEffects = 0;
+}
+def CXX_LIFETIME_END : StandardPseudoInstruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins i32imm:$id);
+  let AsmString = "CXX_LIFETIME_END";
+  let hasSideEffects = 0;
+}
 def STACKMAP : StandardPseudoInstruction {
   let OutOperandList = (outs);
   let InOperandList = (ins i64imm:$id, i32imm:$nbytes, variable_ops);

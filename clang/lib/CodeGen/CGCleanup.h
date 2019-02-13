@@ -77,6 +77,9 @@ protected:
     /// Whether this cleanup is a lifetime marker
     unsigned IsLifetimeMarker : 1;
 
+    /// Whether this cleanup is a cxx lifetime marker
+    unsigned IsCXXLifetimeMarker : 1;
+
     /// Whether the normal cleanup should test the activation flag.
     unsigned TestFlagInNormalCleanup : 1;
 
@@ -296,6 +299,7 @@ public:
     CleanupBits.IsEHCleanup = isEH;
     CleanupBits.IsActive = isActive;
     CleanupBits.IsLifetimeMarker = false;
+    CleanupBits.IsCXXLifetimeMarker = false;
     CleanupBits.TestFlagInNormalCleanup = false;
     CleanupBits.TestFlagInEHCleanup = false;
     CleanupBits.CleanupSize = cleanupSize;
@@ -320,6 +324,9 @@ public:
 
   bool isLifetimeMarker() const { return CleanupBits.IsLifetimeMarker; }
   void setLifetimeMarker() { CleanupBits.IsLifetimeMarker = true; }
+
+  bool isCXXLifetimeMarker() const { return CleanupBits.IsCXXLifetimeMarker; }
+  void setCXXLifetimeMarker() { CleanupBits.IsCXXLifetimeMarker = true; }
 
   bool hasActiveFlag() const { return ActiveFlag != nullptr; }
   Address getActiveFlag() const {

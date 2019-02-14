@@ -11,10 +11,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/BreadthFirstIterator.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/Intrinsics.h"
@@ -32,7 +37,7 @@ using namespace llvm;
 
 #define DEBUG_TYPE "cxxcopyelim"
 
-STATISTIC(CXXCopyElimCounter, "Counts number of eliminated copies");
+STATISTIC(CXXCopyElimCounter, "Number of eliminated C++ copies");
 
 namespace {
 
@@ -118,7 +123,9 @@ struct LifetimeFrame {
 
 using LifetimeFrameMap = SmallDenseMap<Value *, LifetimeFrame>;
 
-class LifetimeTracker : public InstVisitor<LifetimeTracker> {
+class LifetimeTracker : private InstVisitor<LifetimeTracker> {
+  friend class InstVisitor<LifetimeTracker>;
+
   const DataLayout &DL;
   LifetimeFrameMap &Lifetimes;
 
@@ -129,7 +136,7 @@ class LifetimeTracker : public InstVisitor<LifetimeTracker> {
       return predecessors(BB);
   }
 
-  // TODO: DomTree migth be a better option here
+  // TODO: change to dominator tree
   template <bool DirDown = true>
   IntrinsicInst *BFSClosestIntrinsic(Instruction *BI, Value *V,
                                      Intrinsic::ID ID) {
@@ -175,10 +182,6 @@ class LifetimeTracker : public InstVisitor<LifetimeTracker> {
     return nullptr;
   }
 
-public:
-  LifetimeTracker(const DataLayout &DL, LifetimeFrameMap &Lifetimes) noexcept
-      : DL{DL}, Lifetimes{Lifetimes} {}
-
   void visitIntrinsicInst(IntrinsicInst &Intr) {
     if (!Intr.isLifetimeStartOrEnd() && !isCXXLifetimeInst(Intr))
       return;
@@ -211,6 +214,60 @@ public:
       auto &Dtors = LFFrame.DtorFrames;
       Dtors.push_back({&Intr, End});
     }
+  }
+
+public:
+  LifetimeTracker(Function &F, LifetimeFrameMap &Lifetimes)
+      : DL{F.getParent()->getDataLayout()}, Lifetimes{Lifetimes} {
+    visit(F);
+  }
+
+  // TODO: these checks should be unrecoverable errors - change to asserts
+  // The pass may produce some inconsistent results, that's why
+  // we currently treat inconsistencies as soft errors.
+  bool verify() const noexcept {
+    bool failed = false;
+    for (const auto &P : Lifetimes) {
+      const Value *V = P.first;
+      const auto &Ctor = P.second.CtorFrame;
+      if (!Ctor.Begin) {
+        LLVM_DEBUG(
+            dbgs() << "Error: no corresponding lifetime.start intrinsic for '"
+                   << *V << "'\n");
+        failed = true;
+      }
+      if (!Ctor.End) {
+        LLVM_DEBUG(
+            dbgs()
+            << "Error: no corresponding cxx.lifetime.start intrinsic for '"
+            << *V << "'\n");
+        failed = true;
+      }
+
+      const auto &Dtors = P.second.DtorFrames;
+      if (Dtors.empty()) {
+        LLVM_DEBUG(dbgs() << "Error: no corresponding dtor frame for '" << *V
+                          << "'\n");
+        failed = true;
+      }
+
+      for (const auto &Dtor : P.second.DtorFrames) {
+        if (!Dtor.Begin) {
+          LLVM_DEBUG(
+              dbgs()
+              << "Error: no corresponding cxx.lifetime.end intrinsic for '"
+              << *V << "'\n");
+          failed = true;
+        }
+        if (!Dtor.End) {
+          LLVM_DEBUG(dbgs()
+                     << "Error: no corresponding lifetime.end intrinsic for '"
+                     << *V << "'\n");
+          failed = true;
+        }
+      }
+    }
+    return !failed;
   }
 };
 
@@ -271,52 +328,6 @@ public:
       Copies.insert({ThisV, {&Intr, &ThisIt->second, &FromIt->second}});
   }
 };
-
-// TODO: these checks should be unrecoverable errors - change to asserts
-// The pass may produce some inconsistent results, that's why
-// we currently treat inconsistencies as soft errors.
-bool verifyLifetimes(const LifetimeFrameMap &LFMap) noexcept {
-  bool failed = false;
-  for (const auto &P : LFMap) {
-    const Value *V = P.first;
-    const auto &Ctor = P.second.CtorFrame;
-    if (!Ctor.Begin) {
-      LLVM_DEBUG(
-          dbgs() << "Error: no corresponding lifetime.start intrinsic for '"
-                 << *V << "'\n");
-      failed = true;
-    }
-    if (!Ctor.End) {
-      LLVM_DEBUG(
-          dbgs() << "Error: no corresponding cxx.lifetime.start intrinsic for '"
-                 << *V << "'\n");
-      failed = true;
-    }
-
-    const auto &Dtors = P.second.DtorFrames;
-    if (Dtors.empty()) {
-      LLVM_DEBUG(dbgs() << "Error: no corresponding dtor frame for '" << *V
-                        << "'\n");
-      failed = true;
-    }
-
-    for (const auto &Dtor : P.second.DtorFrames) {
-      if (!Dtor.Begin) {
-        LLVM_DEBUG(
-            dbgs() << "Error: no corresponding cxx.lifetime.end intrinsic for '"
-                   << *V << "'\n");
-        failed = true;
-      }
-      if (!Dtor.End) {
-        LLVM_DEBUG(
-            dbgs() << "Error: no corresponding lifetime.end intrinsic for '"
-                   << *V << "'\n");
-        failed = true;
-      }
-    }
-  }
-  return !failed;
-}
 
 void statLifetimes(const Function &F, const LifetimeFrameMap &LFMap) {
   LLVM_DEBUG(dbgs() << "Function " << F.getName() << " has " << LFMap.size()
@@ -431,6 +442,31 @@ void removeCodeBySplittingBlocks(Instruction *BeginI, Instruction *EndI) {
   */
 }
 
+void elideCXXCopy(CopyData &CD) {
+  Value *Source = CD.Source->V;
+
+  CXXFrame &CF = CD.Target->CtorFrame;
+  CXXFrames &DFs = CD.Target->DtorFrames;
+
+  // TODO: check that next node is not nullptr
+  assert(CF.End->getNextNode() && "no next node for CF");
+
+  // TODO: simplify
+  // TODO: maybe we should remove code starting at copy intrinsic?
+  removeCodeBySplittingBlocks(CF.Begin, CF.End->getNextNode());
+  for (auto &DF : DFs) {
+    assert(DF.End->getNextNode() && "no next node 2");
+    removeCodeBySplittingBlocks(DF.Begin, DF.End->getNextNode());
+  }
+
+  // replace all the remaining uses of Target with Source
+  Value *Target = CD.Target->V;
+  dbgs() << "Target type: " << *Target->getType() << "\n";
+  dbgs() << "Source type: " << *Source->getType() << "\n";
+  Target->replaceAllUsesWith(Source);
+}
+
+#if 0
 bool elideCXXCopies(CopyMap &CM) {
   bool changed = false;
 
@@ -463,7 +499,7 @@ bool elideCXXCopies(CopyMap &CM) {
 
       changed = true;
       ++CXXCopyElimCounter;
-      return changed;
+      return changed; // TODO: HACK!
     } else {
       LLVM_DEBUG(dbgs() << "Value '" << *CD.Source->V
                         << "' is accessed, no way to elide it\n");
@@ -472,15 +508,190 @@ bool elideCXXCopies(CopyMap &CM) {
 
   return changed;
 }
+#endif
 
-struct CXXCopyElim : public FunctionPass {
+using IntrinsicVector = SmallVector<Instruction *, 2>;
+
+template <bool IsPostDom> decltype(auto) make_directed_range(BasicBlock *BB) {
+  if constexpr (IsPostDom)
+    return *BB;
+  else
+    return reverse(*BB);
+}
+
+// TODO: we superfluously traverse some instructions in the first BB
+template <bool IsPostDom>
+IntrinsicVector findClosestIntrinsicForValue(
+    Instruction *FromI, const Value *V, Intrinsic::ID ID, unsigned NumOp,
+    const DominatorTreeBase<BasicBlock, IsPostDom> &DT, const DataLayout &DL) {
+  IntrinsicVector IntrV;
+  SmallVector<BasicBlock *, 8> DominatedBBs;
+
+  for (auto DTN : breadth_first(DT.getNode(FromI->getParent()))) {
+    BasicBlock *BB = DTN->getBlock();
+    for (Instruction &I : make_directed_range<IsPostDom>(BB)) {
+      if (!isa<IntrinsicInst>(I))
+        continue;
+
+      auto &II = cast<IntrinsicInst>(I);
+      if (II.getIntrinsicID() != ID)
+        continue;
+
+      Value *UV = GetUnderlyingObject(II.getOperand(NumOp), DL);
+      if (UV == V)
+        IntrV.emplace_back(&II);
+    }
+  }
+  return IntrV;
+}
+
+bool tryEliminatingSingleCopy(Function &F, IntrinsicInst &Intr,
+                              DominatorTree &DT, PostDominatorTree &PDT) {
+  assert(isCXXCopyInst(Intr) &&
+         "Not a copy instruction; maybe iteration invalidation took place");
+
+  const DataLayout &DL = F.getParent()->getDataLayout();
+
+  Value *Target = GetUnderlyingObject(Intr.getOperand(0), DL);
+  Value *Source = GetUnderlyingObject(Intr.getOperand(1), DL);
+
+  LifetimeFrameMap Lifetimes;
+  LifetimeTracker LFT(F, Lifetimes);
+  if (!LFT.verify())
+    return false;
+
+  auto ThisIt = Lifetimes.find(Target);
+  if (ThisIt == Lifetimes.end()) {
+    LLVM_DEBUG(dbgs() << "Error: couldn't find lifetime for '" << *Target
+                      << "', ignore the copy\n");
+    return false;
+  }
+
+  auto FromIt = Lifetimes.find(Source);
+  if (FromIt == Lifetimes.end()) {
+    LLVM_DEBUG(dbgs() << "Error: couldn't find lifetime for '" << *Source
+                      << "', ignore the copy\n");
+    return false;
+  }
+
+  CopyData CD{&Intr, &ThisIt->second, &FromIt->second};
+  if (!CD.canBeElided()) {
+    LLVM_DEBUG(dbgs() << "The value '" << *Source
+                      << "' is accessed, no way to elide it\n;");
+    return false;
+  }
+
+  LLVM_DEBUG(
+      dbgs() << "The value '" << *Source
+             << "' is *not* accessed, we are proceeding with the elision\n;");
+
+  elideCXXCopy(CD);
+
+#if 0
+  // find lifetime for the Target Value
+  IntrinsicVector LFSV = findClosestIntrinsicForValue(
+      &Intr, Target, Intrinsic::lifetime_start, 1u, PDT, DL);
+  if (LFSV.empty()) {
+    LLVM_DEBUG(
+        dbgs() << "Error: we haven't found any lifetime.start intrinsic for '"
+               << *Target << "', ignore the copy\n");
+    return false;
+  }
+  // otherwise, assert that there is a single one
+  assert(LFSV.size() == 1 && "How come there are many lifetime.starts for a single value?");
+
+  IntrinsicVector LFEV = findClosestIntrinsicForValue(
+      &Intr, Target, Intrinsic::lifetime_start, 1u, PDT, DL);
+  if (LFEV.empty()) {
+    LLVM_DEBUG(
+        dbgs() << "Error: we haven't found any cxx.lifetime.start intrinsic for '"
+               << *Target << "', ignore the copy\n");
+    return false;
+  }
+  // otherwise, assert that there is a single one
+  assert(LFSV.size() == 1 && "How come there are many cxx.lifetime.starts for a single value?");
+#endif
+
+  return true;
+}
+
+// We identify copies by their sources and targets.
+// It might be not strictly correct, but at this point
+// I don't think we invalidate any blocks with allocas
+class CopyIdentity {
+  Value *Target = nullptr;
+  Value *Source = nullptr;
+
+public:
+  CopyIdentity(const IntrinsicInst &II, const DataLayout &DL) {
+    assert(isCXXCopyInst(II) &&
+           "Not a copy instruction; maybe iteration invalidation took place");
+    Target = GetUnderlyingObject(II.getOperand(0), DL);
+    Source = GetUnderlyingObject(II.getOperand(1), DL);
+  }
+
+  const Value *getTarget() const { return Target; }
+  const Value *getSource() const { return Source; }
+
+  friend bool operator<(const CopyIdentity &left, const CopyIdentity &right) {
+    return std::tie(left.Target, left.Source) <
+           std::tie(right.Target, right.Source);
+  }
+  friend bool operator==(const CopyIdentity &left, const CopyIdentity &right) {
+    return std::tie(left.Target, left.Source) <
+           std::tie(right.Target, right.Source);
+  }
+};
+
+using VisitedCopies = SmallSet<CopyIdentity, 4>;
+
+IntrinsicInst *findUnvisitedCXXCopyIntrinsic(const DominatorTree &DT,
+                                             const DataLayout &DL,
+                                             VisitedCopies &VCS) {
+  for (auto DTN : depth_first(DT.getRootNode())) {
+    for (Instruction &I : *DTN->getBlock())
+      if (isa<IntrinsicInst>(I) && isCXXCopyInst(I)) {
+        auto &II = cast<IntrinsicInst>(I);
+        if (VCS.count({II, DL}))
+          continue;
+        return &cast<IntrinsicInst>(I);
+      }
+  }
+  return nullptr;
+}
+
+// the pass itself
+struct CXXCopyElimPass : public FunctionPass {
   static char ID;
-  CXXCopyElim() : FunctionPass(ID) {}
+  CXXCopyElimPass() : FunctionPass(ID) {}
 
   bool runOnFunction(Function &F) override {
     if (skipFunction(F))
       return false;
 
+    auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+    auto &PDT = getAnalysis<PostDominatorTreeWrapperPass>().getPostDomTree();
+
+    const DataLayout &DL = F.getParent()->getDataLayout();
+
+    VisitedCopies VCS;
+
+    bool changed = false;
+    // we have to deeply eliminate copies; TODO: elaborate more on this
+    while (auto *CopyIntr = findUnvisitedCXXCopyIntrinsic(DT, DL, VCS)) {
+      VCS.insert({*CopyIntr, DL});
+      if (!tryEliminatingSingleCopy(F, *CopyIntr, DT, PDT))
+        continue;
+      DT.recalculate(F);
+      PDT.recalculate(F);
+      changed = true;
+      // update statistics
+      ++CXXCopyElimCounter;
+    }
+
+    return changed;
+
+#if 0
     LifetimeFrameMap Lifetimes;
     LifetimeTracker LFT(F.getParent()->getDataLayout(), Lifetimes);
 
@@ -508,25 +719,36 @@ struct CXXCopyElim : public FunctionPass {
       LLVM_DEBUG(dbgs() << "DUMPING FUNCTION AFTER\n"; F.dump());
 
     return changed;
+#endif
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addRequired<PostDominatorTreeWrapperPass>();
     // TODO: the analysis is quite aggressive, so we
     // probably shouldn't preserve anything
-    // later if we use DominatorTree, it will be reasonable
-    // to use DomUpdater to preserve the Analysis
+    // TODO: don't recalculate domtree each time,
+    // use DomUpdater
   }
 };
 } // namespace
 
-FunctionPass *llvm::createCXXCopyEliminationPass() { return new CXXCopyElim(); }
+FunctionPass *llvm::createCXXCopyEliminationPass() {
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeDominatorTreeWrapperPassPass(Registry);
+  initializePostDominatorTreeWrapperPassPass(Registry);
+  return new CXXCopyElimPass();
+}
 
-char CXXCopyElim::ID = 0;
-static RegisterPass<CXXCopyElim> X("cxxcopyelim", "Eliminate C++ copies");
+char CXXCopyElimPass::ID = 0;
+static RegisterPass<CXXCopyElimPass> X("cxxcopyelim", "Eliminate C++ copies");
 
 static void registerMyPass(const llvm::PassManagerBuilder &,
                            legacy::PassManagerBase &PM) {
-  PM.add(new CXXCopyElim());
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeDominatorTreeWrapperPassPass(Registry);
+  initializePostDominatorTreeWrapperPassPass(Registry);
+  PM.add(new CXXCopyElimPass());
 }
 static llvm::RegisterStandardPasses
     RegisterMyPassEarly(llvm::PassManagerBuilder::EP_EarlyAsPossible,

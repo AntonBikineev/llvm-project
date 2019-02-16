@@ -202,7 +202,30 @@ RValue CodeGenFunction::EmitAnyExpr(const Expr *E,
   case TEK_Aggregate:
     if (!ignoreResult && aggSlot.isIgnored())
       aggSlot = CreateAggTemp(E->getType(), "agg-temp");
+
+    // TODO: always pushing lifetime.end cleanups as part
+    // of full expression seems not to be a good idea
+    if (!ignoreResult) {
+      if (auto *Size =
+              EmitLifetimeStart(CGM.getDataLayout().getTypeAllocSize(
+                                    aggSlot.getAddress().getElementType()),
+                                aggSlot.getPointer()))
+        pushFullExprCleanup<CallLifetimeEnd>(NormalEHLifetimeMarker,
+                                             aggSlot.getAddress(), Size);
+    }
+
     EmitAggExpr(E, aggSlot);
+
+    // generate cxx.lifetime markers for temporary *aggregates* as well
+    if (!ignoreResult && CGM.getCodeGenOpts().EnableCXXLifetimeMarkers) {
+      uint64_t Size =
+          CGM.getDataLayout().getTypeAllocSize(ConvertTypeForMem(E->getType()));
+      llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
+      pushFullExprCleanup<CallCXXLifetimeEnd>(NormalEHLifetimeMarker,
+                                              aggSlot.getAddress(), SizeV);
+      EmitCXXLifetimeStart(Size, aggSlot.getPointer());
+    }
+
     return aggSlot.asRValue();
   }
   llvm_unreachable("bad evaluation kind");
@@ -212,34 +235,10 @@ RValue CodeGenFunction::EmitAnyExpr(const Expr *E,
 /// always be accessible even if no aggregate location is provided.
 RValue CodeGenFunction::EmitAnyExprToTemp(const Expr *E) {
   AggValueSlot AggSlot = AggValueSlot::ignored();
-  QualType AggType = E->getType();
 
-  // TODO: always pushing lifetime.end cleanups as part
-  // of full expression seems not to be a good idea
-  if (hasAggregateEvaluationKind(AggType)) {
-    AggSlot = CreateAggTemp(AggType, "agg.tmp");
-    if (auto *Size =
-            EmitLifetimeStart(CGM.getDataLayout().getTypeAllocSize(
-                                  AggSlot.getAddress().getElementType()),
-                              AggSlot.getPointer()))
-      pushFullExprCleanup<CallLifetimeEnd>(NormalEHLifetimeMarker,
-                                           AggSlot.getAddress(), Size);
-  }
-
-  RValue RV = EmitAnyExpr(E, AggSlot);
-
-  // generate cxx.lifetime markers for temporary *aggregates* as well
-  if (hasAggregateEvaluationKind(E->getType()) &&
-      CGM.getCodeGenOpts().EnableCXXLifetimeMarkers) {
-    uint64_t Size =
-        CGM.getDataLayout().getTypeAllocSize(ConvertTypeForMem(AggType));
-    llvm::Value *SizeV = llvm::ConstantInt::get(Int64Ty, Size);
-    pushFullExprCleanup<CallCXXLifetimeEnd>(NormalEHLifetimeMarker,
-                                            AggSlot.getAddress(), SizeV);
-    EmitCXXLifetimeStart(Size, AggSlot.getPointer());
-  }
-
-  return RV;
+  if (hasAggregateEvaluationKind(E->getType()))
+    AggSlot = CreateAggTemp(E->getType(), "agg.tmp");
+  return EmitAnyExpr(E, AggSlot);
 }
 
 /// EmitAnyExprToMem - Evaluate an expression into a given memory

@@ -399,6 +399,14 @@ void elideCXXCopy(CopyData &CD) {
                     << '\n');
   LLVM_DEBUG(dbgs() << "                  source type: " << *Source->getType()
                     << '\n');
+
+  // check if target and source types are different, and
+  // in case they are, cast the latter to the type of the former
+  if (Target->getType() != Source->getType())
+    Source = CastInst::CreateBitOrPointerCast(
+        Source, Target->getType(), "",
+        cast<Instruction>(Source)->getNextNode());
+
   Target->replaceAllUsesWith(Source);
 }
 

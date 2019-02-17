@@ -271,6 +271,11 @@ struct CopyData {
   LifetimeFrame *Source = nullptr;   // 'From' object
 
   bool canBeElided() const {
+    // TODO: we don't currently support the following case,
+    // but have to address it later on
+    if (Target->V->getType() != Source->V->getType())
+      return false;
+
     if (isNonTriviallyAccessedIn(Source->V, Source->CtorFrame.End, CopyIntr))
       return false;
 
@@ -402,6 +407,7 @@ void elideCXXCopy(CopyData &CD) {
 
   // check if target and source types are different, and
   // in case they are, cast the latter to the type of the former
+  // TODO: this case is currently disabled in canBeElided function
   if (Target->getType() != Source->getType())
     Source = CastInst::CreateBitOrPointerCast(
         Source, Target->getType(), "",
@@ -449,7 +455,9 @@ bool tryEliminatingSingleCopy(Function &F, IntrinsicInst &Intr) {
       dbgs() << "The value '" << *Source
              << "' is *not* accessed, we are proceeding with the elision\n");
 
+  //LLVM_DEBUG(dbgs() << "**********BEFORE COPY ELIM***********\n" << F);
   elideCXXCopy(CD);
+  //LLVM_DEBUG(dbgs() << "***********AFTER COPY ELIM***********\n" << F);
 
   return true;
 }
@@ -545,9 +553,5 @@ static void registerMyPass(const llvm::PassManagerBuilder &,
   PM.add(new CXXCopyElimPass());
 }
 
-static llvm::RegisterStandardPasses
-    RegisterMyPassEarly(llvm::PassManagerBuilder::EP_EarlyAsPossible,
-                        registerMyPass);
-static llvm::RegisterStandardPasses
-    RegisterMyPassAfter(llvm::PassManagerBuilder::EP_ScalarOptimizerLate,
-                        registerMyPass);
+static llvm::RegisterStandardPasses RegisterMyPassEarly(
+    llvm::PassManagerBuilder::EP_EarlyAsPossibleAfterInliner, registerMyPass);

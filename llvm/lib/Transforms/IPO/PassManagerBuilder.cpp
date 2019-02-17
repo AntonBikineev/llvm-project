@@ -294,7 +294,7 @@ void PassManagerBuilder::addPGOInstrPasses(legacy::PassManagerBase &MPM) {
     MPM.add(createEarlyCSEPass());             // Catch trivial redundancies
     MPM.add(createCFGSimplificationPass());    // Merge & remove BBs
     MPM.add(createInstructionCombiningPass()); // Combine silly seq's
-    addExtensionsToPM(EP_Peephole, MPM);
+    addExtensionsToPM(EP_EarlyAsPossibleAfterInliner, MPM);
   }
   if (EnablePGOInstrGen) {
     MPM.add(createPGOInstrumentationGenLegacyPass());
@@ -537,6 +537,8 @@ void PassManagerBuilder::populateModulePassManager(
     Inliner = nullptr;
     RunInliner = true;
   }
+
+  addExtensionsToPM(EP_EarlyAsPossibleAfterInliner, MPM);
 
   MPM.add(createPostOrderFunctionAttrsLegacyPass());
   if (OptLevel > 2)

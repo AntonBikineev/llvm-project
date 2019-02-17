@@ -69,6 +69,10 @@ public:
     /// out of the frontend.
     EP_EarlyAsPossible,
 
+    /// EP_EarlyAsPossibleAfterInliner - Same as before, but guaranteed to be run
+    /// after the inliner transformation (TODO: legacy inliner at the moment)
+    EP_EarlyAsPossibleAfterInliner,
+
     /// EP_ModuleOptimizerEarly - This extension point allows adding passes
     /// just before the main module-level optimization passes.
     EP_ModuleOptimizerEarly,

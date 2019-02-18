@@ -17,7 +17,9 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/OrderedInstructions.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/Intrinsics.h"
@@ -84,6 +86,14 @@ bool isInBetweenOf(const Instruction *I, const Instruction *From,
   return true;
 }
 
+bool isInBetweenOf(const Instruction *I, const Instruction *From,
+                   const Instruction *To, const OrderedInstructions &OI) {
+  if (!OI.dominates(From, I) || !OI.dominates(I, To))
+    return false;
+
+  return true;
+}
+
 bool isNonTriviallyAccessedIn(const Value *V, const Instruction *From,
                               const Instruction *To) {
   for (const auto U : V->users()) {
@@ -92,6 +102,21 @@ bool isNonTriviallyAccessedIn(const Value *V, const Instruction *From,
       return true;
     auto *I = cast<const Instruction>(U);
     if (isInBetweenOf(I, From, To) && !isIdleInstruction(I))
+      return true;
+  }
+
+  return false;
+}
+
+bool isNonTriviallyAccessedIn(const Value *V, const Instruction *From,
+                              const Instruction *To,
+                              const OrderedInstructions &OI) {
+  for (const auto U : V->users()) {
+    // assumes yes, if it's constant or memory access or whatever
+    if (!isa<Instruction>(U))
+      return true;
+    auto *I = cast<const Instruction>(U);
+    if (isInBetweenOf(I, From, To, OI) && !isIdleInstruction(I))
       return true;
   }
 
@@ -121,7 +146,7 @@ using LifetimeFrameMap = SmallDenseMap<Value *, LifetimeFrame>;
 class LifetimeTracker : private InstVisitor<LifetimeTracker> {
   friend class InstVisitor<LifetimeTracker>;
 
-  const DataLayout &DL;
+  Function &F;
   LifetimeFrameMap &Lifetimes;
 
   template <bool DirDown = true> static auto CreateBBRange(BasicBlock *BB) {
@@ -137,6 +162,8 @@ class LifetimeTracker : private InstVisitor<LifetimeTracker> {
     std::queue<Instruction *> queue;
     SmallPtrSet<Instruction *, 8> visited;
     queue.push(BI);
+
+    const DataLayout &DL = F.getParent()->getDataLayout();
 
     while (!queue.empty()) {
       Instruction *CI = queue.front();
@@ -180,6 +207,8 @@ class LifetimeTracker : private InstVisitor<LifetimeTracker> {
     if (!isCXXLifetimeInst(Intr))
       return;
 
+    const DataLayout &DL = F.getParent()->getDataLayout();
+
     Value *V = GetUnderlyingObject(Intr.getOperand(1), DL);
 
     auto It = Lifetimes.find(V);
@@ -212,76 +241,89 @@ class LifetimeTracker : private InstVisitor<LifetimeTracker> {
 
 public:
   LifetimeTracker(Function &F, LifetimeFrameMap &Lifetimes)
-      : DL{F.getParent()->getDataLayout()}, Lifetimes{Lifetimes} {
+      : F{F}, Lifetimes{Lifetimes} {
     visit(F);
   }
-
-  // TODO: these checks should eventually be unrecoverable errors -
-  // change to asserts. The pass may produce some inconsistent results,
-  // that's why we currently treat inconsistencies as soft errors.
-  bool verify() const noexcept {
-    bool failed = false;
-    for (const auto &P : Lifetimes) {
-      const Value *V = P.first;
-      const auto &Ctor = P.second.CtorFrame;
-      if (!Ctor.Begin) {
-        LLVM_DEBUG(
-            dbgs() << "Error: no corresponding lifetime.start intrinsic for '"
-                   << *V << "'\n");
-        failed = true;
-      }
-      if (!Ctor.End) {
-        LLVM_DEBUG(
-            dbgs()
-            << "Error: no corresponding cxx.lifetime.start intrinsic for '"
-            << *V << "'\n");
-        failed = true;
-      }
-
-      const auto &Dtors = P.second.DtorFrames;
-      if (Dtors.empty()) {
-        LLVM_DEBUG(dbgs() << "Error: no corresponding dtor frame for '" << *V
-                          << "'\n");
-        failed = true;
-      }
-
-      for (const auto &Dtor : P.second.DtorFrames) {
-        if (!Dtor.Begin) {
-          LLVM_DEBUG(
-              dbgs()
-              << "Error: no corresponding cxx.lifetime.end intrinsic for '"
-              << *V << "'\n");
-          failed = true;
-        }
-        if (!Dtor.End) {
-          LLVM_DEBUG(dbgs()
-                     << "Error: no corresponding lifetime.end intrinsic for '"
-                     << *V << "'\n");
-          failed = true;
-        }
-      }
-    }
-    return !failed;
-  }
 };
+
+// TODO: these checks should eventually be unrecoverable errors -
+// change to asserts. The pass may produce some inconsistent results,
+// that's why we currently treat inconsistencies as soft errors.
+bool verifyLifetime(const LifetimeFrame &LF) {
+  bool failed = false;
+
+  const Value *V = LF.V;
+  const Function &F = *cast<Instruction>(V)->getParent()->getParent();
+
+  const auto &Ctor = LF.CtorFrame;
+  if (!Ctor.Begin) {
+    LLVM_DEBUG(dbgs() << "Error in: '" << F.getName()
+                      << "' no corresponding lifetime.start intrinsic for '"
+                      << *V << "'\n");
+    failed = true;
+  }
+  if (!Ctor.End) {
+    LLVM_DEBUG(dbgs() << "Error in: '" << F.getName()
+                      << "' no corresponding cxx.lifetime.start intrinsic for '"
+                      << *V << "'\n");
+    failed = true;
+  }
+
+  const auto &Dtors = LF.DtorFrames;
+  if (Dtors.empty()) {
+    LLVM_DEBUG(dbgs() << "Error in: '" << F.getName()
+                      << "' no corresponding dtor frame for '" << *V << "'\n");
+    failed = true;
+  }
+
+  for (const auto &Dtor : LF.DtorFrames) {
+    if (!Dtor.Begin) {
+      LLVM_DEBUG(dbgs() << "Error in: '" << F.getName()
+                        << "' no corresponding cxx.lifetime.end intrinsic for '"
+                        << *V << "'\n");
+      failed = true;
+    }
+    if (!Dtor.End) {
+      LLVM_DEBUG(dbgs() << "Error in: '" << F.getName()
+                        << "' no corresponding lifetime.end intrinsic for '"
+                        << *V << "'\n");
+      failed = true;
+    }
+  }
+
+  return !failed;
+}
 
 struct CopyData {
   IntrinsicInst *CopyIntr = nullptr; // cxx.copy
   LifetimeFrame *Target = nullptr;   // 'This' object
   LifetimeFrame *Source = nullptr;   // 'From' object
 
-  bool canBeElided() const {
-    // TODO: we don't currently support the following case,
-    // but have to address it later on
-    if (Target->V->getType() != Source->V->getType())
+  bool canBeElided(const DominatorTree &DT) const {
+    if (!verifyLifetime(*Target) || !verifyLifetime(*Source))
       return false;
 
-    if (isNonTriviallyAccessedIn(Source->V, Source->CtorFrame.End, CopyIntr))
+    OrderedInstructions OI(const_cast<DominatorTree *>(
+        &DT)); // TODO: optimize creation of this object and manually invalidate
+               // blocks
+
+    // TODO: we don't currently support the following case,
+    // but have to address it later on
+    if (Target->V->getType() != Source->V->getType()) {
+      LLVM_DEBUG(dbgs() << "Target and Source types are different: "
+                        << *Target->V->getType() << " vs "
+                        << *Source->V->getType() << '\n');
+      return false;
+    }
+
+    if (isNonTriviallyAccessedIn(Source->V, Source->CtorFrame.End, CopyIntr,
+                                 OI))
       return false;
 
     const CXXFrames &DtorFrames = Source->DtorFrames;
     for (const auto &DF : DtorFrames)
-      if (isNonTriviallyAccessedIn(Source->V, Target->CtorFrame.End, DF.Begin))
+      if (isNonTriviallyAccessedIn(Source->V, Target->CtorFrame.End, DF.Begin,
+                                   OI))
         return false;
 
     return true;
@@ -416,7 +458,8 @@ void elideCXXCopy(CopyData &CD) {
   Target->replaceAllUsesWith(Source);
 }
 
-bool tryEliminatingSingleCopy(Function &F, IntrinsicInst &Intr) {
+bool tryEliminatingSingleCopy(Function &F, IntrinsicInst &Intr,
+                              const DominatorTree &DT) {
   assert(isCXXCopyInst(Intr) &&
          "Not a copy instruction; maybe iteration invalidation took place");
 
@@ -427,37 +470,36 @@ bool tryEliminatingSingleCopy(Function &F, IntrinsicInst &Intr) {
 
   LifetimeFrameMap Lifetimes;
   LifetimeTracker LFT{F, Lifetimes};
-  if (!LFT.verify())
-    return false;
 
   auto ThisIt = Lifetimes.find(Target);
   if (ThisIt == Lifetimes.end()) {
-    LLVM_DEBUG(dbgs() << "Error: couldn't find lifetime for '" << *Target
-                      << "', ignore the copy\n");
+    LLVM_DEBUG(dbgs() << "'" << F.getName() << "': couldn't find lifetime for '"
+                      << *Target << "', ignore the copy\n");
     return false;
   }
 
   auto FromIt = Lifetimes.find(Source);
   if (FromIt == Lifetimes.end()) {
-    LLVM_DEBUG(dbgs() << "Error: couldn't find lifetime for '" << *Source
+    LLVM_DEBUG(dbgs() << "Error in '" << F.getName()
+                      << "': couldn't find lifetime for '" << *Source
                       << "', ignore the copy\n");
     return false;
   }
 
   CopyData CD{&Intr, &ThisIt->second, &FromIt->second};
-  if (!CD.canBeElided()) {
-    LLVM_DEBUG(dbgs() << "The value '" << *Source
-                      << "' is accessed, no way to elide it\n");
+  if (!CD.canBeElided(DT)) {
+    LLVM_DEBUG(dbgs() << "In function '" << F.getName() << "' the value '"
+                      << *Source << "' is accessed, no way to elide it\n");
     return false;
   }
 
   LLVM_DEBUG(
-      dbgs() << "The value '" << *Source
+      dbgs() << "In function '" << F.getName() << "' the value '" << *Source
              << "' is *not* accessed, we are proceeding with the elision\n");
 
-  //LLVM_DEBUG(dbgs() << "**********BEFORE COPY ELIM***********\n" << F);
+  // LLVM_DEBUG(dbgs() << "**********BEFORE COPY ELIM***********\n" << F);
   elideCXXCopy(CD);
-  //LLVM_DEBUG(dbgs() << "***********AFTER COPY ELIM***********\n" << F);
+  // LLVM_DEBUG(dbgs() << "***********AFTER COPY ELIM***********\n" << F);
 
   return true;
 }
@@ -515,6 +557,8 @@ struct CXXCopyElimPass : public FunctionPass {
     if (skipFunction(F))
       return false;
 
+    auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+
     bool changed = false;
 
     const DataLayout &DL = F.getParent()->getDataLayout();
@@ -524,8 +568,10 @@ struct CXXCopyElimPass : public FunctionPass {
     while (auto *CopyIntr = findUnvisitedCXXCopyIntrinsic(F, DL, VCS)) {
       CopyIdentity CI{*CopyIntr, DL};
       VCS.insert({*CopyIntr, DL});
-      if (!tryEliminatingSingleCopy(F, *CopyIntr))
+      if (!tryEliminatingSingleCopy(F, *CopyIntr, DT))
         continue;
+      // TODO: don't recalculate each time, use DomUpdater
+      DT.recalculate(F);
       changed = true;
       // update statistics
       ++CXXCopyElimCounter;
@@ -535,6 +581,7 @@ struct CXXCopyElimPass : public FunctionPass {
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<DominatorTreeWrapperPass>();
     // the analysis is quite aggressive, so we
     // probably shouldn't preserve anything
   }
@@ -542,6 +589,8 @@ struct CXXCopyElimPass : public FunctionPass {
 } // namespace
 
 FunctionPass *llvm::createCXXCopyEliminationPass() {
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeDominatorTreeWrapperPassPass(Registry);
   return new CXXCopyElimPass();
 }
 
@@ -550,6 +599,8 @@ static RegisterPass<CXXCopyElimPass> X("cxxcopyelim", "Eliminate C++ copies");
 
 static void registerMyPass(const llvm::PassManagerBuilder &,
                            legacy::PassManagerBase &PM) {
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeDominatorTreeWrapperPassPass(Registry);
   PM.add(new CXXCopyElimPass());
 }
 
